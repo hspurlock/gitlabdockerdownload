@@ -7,23 +7,26 @@ set -e # Exit immediately if a command exits with a non-zero status.
 # set -x # Debug mode
 
 usage() {
-    echo "Usage: $0 -r <registry_url> -i <image_path> -t <image_tag> -k <token> [-o <output_directory>]"
+    echo "Usage: $0 -r <registry_url> -i <image_path> -t <image_tag> -k <token> [-U <username>] [-o <output_directory>]"
     echo "  -r REGISTRY_URL:      FQDN of the GitLab Container Registry (e.g., registry.gitlab.com)"
     echo "  -i IMAGE_PATH:        Full path of the image (e.g., mygroup/myproject/myimage)"
     echo "  -t IMAGE_TAG:         Tag of the image (e.g., latest, 1.0.0)"
     echo "  -k TOKEN:             GitLab Token (PAT, Deploy Token, CI Job Token) with read_registry scope"
+    echo "  -U USERNAME:          Optional. Username for Basic Authentication (e.g., your GitLab username for PAT, 'gitlab-ci-token' for CI job token, or Deploy Token username). If provided, TOKEN is used as the password."
     echo "  -o OUTPUT_DIRECTORY:  Optional. Directory to save image components (default: ./docker_image_download)"
     exit 1
 }
 
 OUTPUT_DIR="./docker_image_download"
+USERNAME=""
 
-while getopts ":r:i:t:k:o:" opt; do
+while getopts ":r:i:t:k:U:o:" opt; do
     case ${opt} in
         r) REGISTRY_URL=$OPTARG ;; 
         i) IMAGE_PATH=$OPTARG ;;  
         t) IMAGE_TAG=$OPTARG ;;   
         k) TOKEN=$OPTARG ;;       
+        U) USERNAME=$OPTARG ;;   
         o) OUTPUT_DIR=$OPTARG ;;  
         \?) echo "Invalid option: $OPTARG" 1>&2; usage ;; 
         :) echo "Invalid option: $OPTARG requires an argument" 1>&2; usage ;; 
@@ -67,9 +70,16 @@ make_request() {
         accept_header="$extra_accept_header"
     fi
 
+    local auth_opts
+    if [ -n "$USERNAME" ]; then
+        auth_opts=(-u "$USERNAME:$TOKEN")
+    else
+        auth_opts=(-H "Authorization: Bearer $TOKEN")
+    fi
+
     if [ -n "$output_file" ]; then
         http_status=$(curl -sSL -w "%{http_code}" \
-            -H "Authorization: Bearer $TOKEN" \
+            "${auth_opts[@]}" \
             -H "Accept: $accept_header" \
             -D "$RESPONSE_HEADERS_FILE" \
             -o "$output_file" \
@@ -79,7 +89,7 @@ make_request() {
         # If no output file, curl outputs to stdout, so we can't also output http_status easily to stdout.
         # Instead, capture stdout to a variable, and http_status separately.
         response_body_and_status=$(curl -sSL -w "\n%{http_code}" \
-            -H "Authorization: Bearer $TOKEN" \
+            "${auth_opts[@]}" \
             -H "Accept: $accept_header" \
             -D "$RESPONSE_HEADERS_FILE" \
             "$url")

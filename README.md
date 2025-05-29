@@ -131,18 +131,34 @@ You can typically install `curl` and `jq` using your system's package manager:
 *   `-r <registry_url>`: (Mandatory) FQDN of the GitLab Container Registry (e.g., `registry.gitlab.com`).
 *   `-i <image_path>`: (Mandatory) Full path of the image (e.g., `mygroup/myproject/myimage`).
 *   `-t <image_tag>`: (Mandatory) Tag of the image (e.g., `latest`, `1.0.0`).
-*   `-k <token>`: (Mandatory) GitLab Token (PAT, Deploy Token, CI Job Token) with `read_registry` scope.
+*   `-k <token>`: (Mandatory) GitLab Token (PAT, Deploy Token, CI Job Token) with `read_registry` scope. Used as the password if `-U` is provided, otherwise as a Bearer token.
+*   `-U <username>`: (Optional) Username for HTTP Basic Authentication. If provided, the script uses Basic Auth (`username:token`). Common values:
+    *   Your GitLab username (when using a Personal Access Token for `-k`).
+    *   The Deploy Token's username (when using a Deploy Token for `-k`).
+    *   `gitlab-ci-token` (when using a `CI_JOB_TOKEN` for `-k`).
 *   `-o <output_directory>`: (Optional) Directory to save image components. Defaults to `./docker_image_download`.
 
-### Example Command (download_gitlab_docker_image.sh)
+### Example Commands (download_gitlab_docker_image.sh)
 
+**Using Bearer Token (default):**
 ```bash
 ./download_gitlab_docker_image.sh \\
     -r "registry.gitlab.com" \\
     -i "mygroup/myproject/myimage" \\
     -t "latest" \\
-    -k "YOUR_GITLAB_TOKEN_HERE" \\
+    -k "YOUR_BEARER_TOKEN_HERE" \\
     -o "./my_image_components_bash"
 ```
 
-This command will download the components of the specified image into the `./my_image_components_bash` directory.
+**Using Basic Authentication (with username and Personal Access Token as password):**
+```bash
+./download_gitlab_docker_image.sh \\
+    -r "registry.gitlab.com" \\
+    -i "mygroup/myproject/myimage" \\
+    -t "latest" \\
+    -U "your_gitlab_username" \\
+    -k "YOUR_PERSONAL_ACCESS_TOKEN_HERE" \\
+    -o "./my_image_components_bash"
+```
+
+These commands will download the components of the specified image into the `./my_image_components_bash` directory using the chosen authentication method.
