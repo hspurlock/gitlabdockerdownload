@@ -24,17 +24,30 @@
 
 .PARAMETER Token
     A GitLab Personal Access Token (PAT), Deploy Token, or CI Job Token with at least 'read_registry' scope.
-    This token will be used in an Authorization Bearer header.
+    If -Username is provided, this Token is used as the password for Basic Authentication.
+    Otherwise, it's used as a Bearer token.
+
+.PARAMETER Username
+    Optional. The username for HTTP Basic Authentication. 
+    If provided, the script uses Basic Auth (username:Token) instead of Bearer Token authentication.
+    Common values:
+    - Your GitLab username (when using a Personal Access Token for -Token).
+    - The Deploy Token's username (when using a Deploy Token for -Token).
+    - `gitlab-ci-token` (when using a CI_JOB_TOKEN for -Token).
 
 .PARAMETER OutputDirectory
     Optional. The directory where the image components will be saved.
     Defaults to ".\docker_image_download".
 
 .EXAMPLE
-    .\Download-GitLabDockerImage.ps1 -RegistryUrl "registry.gitlab.com" -ImagePath "myusername/myproject/myimage" -ImageTag "latest" -Token "your_gitlab_token_here" -OutputDirectory "C:\temp\my_downloaded_image"
+    # Example 1: Using Bearer Token (default)
+    .\Download-GitLabDockerImage.ps1 -RegistryUrl "registry.gitlab.com" -ImagePath "myusername/myproject/myimage" -ImageTag "latest" -Token "YOUR_BEARER_TOKEN_HERE"
 
-    This command downloads the 'latest' tag of 'myusername/myproject/myimage' from 'registry.gitlab.com'
-    using the provided token and saves the components to "C:\temp\my_downloaded_image".
+    # Example 2: Using Basic Authentication with a Personal Access Token
+    .\Download-GitLabDockerImage.ps1 -RegistryUrl "registry.gitlab.com" -ImagePath "myusername/myproject/myimage" -ImageTag "latest" -Username "your_gitlab_username" -Token "YOUR_PERSONAL_ACCESS_TOKEN_HERE" -OutputDirectory "C:\temp\my_image"
+
+    These commands download the 'latest' tag of 'myusername/myproject/myimage' from 'registry.gitlab.com'
+    using the specified authentication method and save the components.
 #>
 param(
     [Parameter(Mandatory=$true)]
@@ -47,7 +60,10 @@ param(
     [string]$ImageTag,    
 
     [Parameter(Mandatory=$true)]
-    [string]$Token,       
+    [string]$Token,    
+
+    [Parameter(Mandatory=$false)]
+    [string]$Username,   
 
     [Parameter(Mandatory=$false)]
     [string]$OutputDirectory = ".\docker_image_download"
@@ -63,8 +79,16 @@ if (-not (Test-Path $OutputDirectory)) {
 Write-Host "Image components will be saved to: $(Resolve-Path $OutputDirectory)"
 
 # Construct Headers for registry communication
-$headers = @{
-    "Authorization" = "Bearer $Token"
+$headers = @{}
+if (-not [string]::IsNullOrEmpty($Username)) {
+    # Basic Authentication
+    $base64AuthInfo = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("$($Username):$($Token)"))
+    $headers.Add("Authorization", "Basic $base64AuthInfo")
+    Write-Host "Using Basic Authentication (Username: $Username)"
+} else {
+    # Bearer Token Authentication
+    $headers.Add("Authorization", "Bearer $Token")
+    Write-Host "Using Bearer Token Authentication"
 }
 
 # 1. Fetch the manifest

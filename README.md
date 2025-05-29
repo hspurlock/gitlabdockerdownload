@@ -28,20 +28,34 @@ This is useful for:
     *   Example: `"mygroup/myproject/myimage"`, `"username/projectname/imagename"`
 *   `-ImageTag` (string, Mandatory): The tag of the image you want to download.
     *   Example: `"latest"`, `"1.0.0"`, `"feature-branch"`
-*   `-Token` (string, Mandatory): Your GitLab access token with `read_registry` scope.
+*   `-Token` (string, Mandatory): Your GitLab access token (PAT, Deploy Token, CI Job Token) with `read_registry` scope.
+    *   If `-Username` is provided, this `Token` is used as the password for Basic Authentication.
+    *   Otherwise, it's used as a Bearer token.
     *   Example: `"glpat-xxxxxxxxxxxxxxxxxxxx"`
+*   `-Username` (string, Optional): The username for HTTP Basic Authentication.
+    *   If provided, the script uses Basic Auth (`Username`:`Token`) instead of Bearer Token authentication.
+    *   Common values:
+        *   Your GitLab username (when using a Personal Access Token for `-Token`).
+        *   The Deploy Token's username (when using a Deploy Token for `-Token`).
+        *   `gitlab-ci-token` (when using a `CI_JOB_TOKEN` for `-Token`).
+    *   Example: `"your_gitlab_username"`
 *   `-OutputDirectory` (string, Optional): The local directory where the image components (manifests, config, layers) will be saved. 
     *   Defaults to `.\docker_image_download` (a subdirectory created in the current working directory).
     *   Example: `"C:\temp\my_downloaded_image"`, `"./downloaded_image_files"`
 
-### Example Command
+### Example Commands
 
-
+**Using Bearer Token (default):**
 ```powershell
-./Download-GitLabDockerImage.ps1 -RegistryUrl "registry.gitlab.com" -ImagePath "mygroup/myproject/myimage" -ImageTag "latest" -Token "YOUR_GITLAB_TOKEN_HERE" -OutputDirectory "./my_image_components"
+./Download-GitLabDockerImage.ps1 -RegistryUrl "registry.gitlab.com" -ImagePath "mygroup/myproject/myimage" -ImageTag "latest" -Token "YOUR_BEARER_TOKEN_HERE" -OutputDirectory "./my_image_components"
 ```
 
-Replace `"registry.gitlab.com"`, `"mygroup/myproject/myimage"`, `"latest"`, and `"YOUR_GITLAB_TOKEN_HERE"` with your specific details.
+**Using Basic Authentication (with username and Personal Access Token as password):**
+```powershell
+./Download-GitLabDockerImage.ps1 -RegistryUrl "registry.gitlab.com" -ImagePath "mygroup/myproject/myimage" -ImageTag "latest" -Username "your_gitlab_username" -Token "YOUR_PERSONAL_ACCESS_TOKEN_HERE" -OutputDirectory "./my_image_components"
+```
+
+Replace the placeholder values with your specific details. The script will use the chosen authentication method.
 
 ## Output
 
@@ -57,7 +71,7 @@ The script will create the specified output directory (or `docker_image_download
 *   **401 Unauthorized:** 
     *   Ensure your token is correct and has not expired.
     *   Verify the token has the `read_registry` scope.
-    *   For some self-managed GitLab instances, token authentication mechanisms might differ slightly. This script uses standard Bearer token authentication.
+    *   For some self-managed GitLab instances, token authentication mechanisms might differ slightly. The script now supports both Bearer token and Basic Authentication (username/password).
 *   **Manifest Fetch Issues:** The script attempts to fetch common manifest types. If you encounter issues with a specific registry or image, the manifest media type might be different or unexpected. The script saves unknown manifest types for debugging.
 *   **Network Issues:** Ensure the machine running the script can reach the GitLab registry URL over HTTPS.
 
