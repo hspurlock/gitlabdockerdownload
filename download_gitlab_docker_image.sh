@@ -19,6 +19,73 @@ usage() {
     exit 1
 }
 
+# --- Function to discover Www-Authenticate parameters (realm, service) ---
+discover_auth_params() {
+    echo "Attempting to discover authentication parameters from $REGISTRY_URL..."
+    local discovery_url="https://$REGISTRY_URL/v2/"
+    local auth_header_file
+    auth_header_file=$(mktemp) # Ensure mktemp is available or use a fixed temp file name with cleanup
+
+    # Make a HEAD request to get headers without downloading body
+    # Use initial TOKEN for this discovery if available, as some registries might require it even for the /v2/ endpoint
+    local discovery_auth_opts
+    if [ -n "$USERNAME" ]; then
+        discovery_auth_opts=(-u "$USERNAME:$TOKEN")
+    elif [ -n "$TOKEN" ]; then # If only token is provided, use as bearer for discovery
+        discovery_auth_opts=(-H "Authorization: Bearer $TOKEN")
+    else
+        # No auth provided for discovery, proceed unauthenticated
+        discovery_auth_opts=()
+    fi
+
+    # We don't care about the body, just the headers, specifically Www-Authenticate on a 401
+    # curl -I only gives http_code 000 with -w, so use -D to dump headers and check status
+    local discovery_http_status
+    discovery_http_status=$(curl -sSL -w "%{http_code}" \
+        "${discovery_auth_opts[@]}" \
+        -D "$auth_header_file" \
+        -o /dev/null \
+        "$discovery_url")
+
+    if [ "$discovery_http_status" -eq 401 ]; then
+        echo "Received 401 from $discovery_url, attempting to parse Www-Authenticate header."
+        local www_authenticate_header
+        www_authenticate_header=$(grep -i '^Www-Authenticate:' "$auth_header_file" | head -n 1)
+
+        if [ -n "$www_authenticate_header" ]; then
+            echo "Www-Authenticate header: $www_authenticate_header"
+            # Example: Www-Authenticate: Bearer realm=\"https://gitlab.example.com/jwt/auth\",service=\"container_registry\"
+            # Using sed for extraction. This regex assumes realm and service are quoted.
+            TOKEN_REALM=$(echo "$www_authenticate_header" | sed -n 's/.*realm=\"\([^\"]*\)\".*/\1/p')
+            TOKEN_SERVICE=$(echo "$www_authenticate_header" | sed -n 's/.*service=\"\([^\"]*\)\".*/\1/p')
+            
+            if [ -n "$TOKEN_REALM" ]; then
+                echo "Discovered Realm: $TOKEN_REALM"
+            else
+                echo "Warning: Could not parse realm from Www-Authenticate header." >&2
+            fi
+            if [ -n "$TOKEN_SERVICE" ]; then
+                echo "Discovered Service: $TOKEN_SERVICE"
+            else
+                # Service might be optional or not present in all Www-Authenticate headers for some flows.
+                # Defaulting to 'container_registry' if not found, as it's common for GitLab.
+                echo "Warning: Could not parse service from Www-Authenticate header. Defaulting to 'container_registry'." >&2
+                TOKEN_SERVICE="container_registry"
+            fi
+        else
+            echo "Warning: Received 401 but Www-Authenticate header not found or empty." >&2
+        fi
+    elif [ "$discovery_http_status" -ge 200 ] && [ "$discovery_http_status" -lt 300 ]; then
+        echo "Info: Received $discovery_http_status from $discovery_url. This registry might not require JWT auth or allows anonymous pulls for this path." >&2
+        echo "Proceeding without specific realm/service discovery. If JWT is needed later, it might fail." >&2
+    else
+        echo "Warning: Failed to discover auth params from $discovery_url. HTTP Status: $discovery_http_status" >&2
+        echo "Headers received:" >&2
+        cat "$auth_header_file" >&2
+    fi
+    rm -f "$auth_header_file"
+}
+
 OUTPUT_DIR="./docker_image_download"
 USERNAME=""
 CMD_TOKEN_REALM="" # For command-line provided realm
@@ -115,77 +182,6 @@ echo "Image components will be saved to: $(realpath "$OUTPUT_DIR")"
 # Returns HTTP status code via stdout if no output file, or writes to file and echoes status code.
 # Saves response headers to a temporary file for inspection.
 
-# --- Function to discover Www-Authenticate parameters (realm, service) ---
-discover_auth_params() {
-    echo "Attempting to discover authentication parameters from $REGISTRY_URL..."
-    local discovery_url="https://$REGISTRY_URL/v2/"
-    local auth_header_file
-    auth_header_file=$(mktemp)
-
-    # Make a HEAD request to get headers without downloading body
-    # Use initial TOKEN for this discovery if available, as some registries might require it even for the /v2/ endpoint
-    local discovery_auth_opts
-    if [ -n "$USERNAME" ]; then
-        discovery_auth_opts=(-u "$USERNAME:$TOKEN")
-    elif [ -n "$TOKEN" ]; then # If only token is provided, use as bearer for discovery
-        discovery_auth_opts=(-H "Authorization: Bearer $TOKEN")
-    else
-        # No auth provided for discovery, proceed unauthenticated
-        discovery_auth_opts=()
-    fi
-
-    # We don't care about the body, just the headers, specifically Www-Authenticate on a 401
-    # curl -I only gives http_code 000 with -w, so use -D to dump headers and check status
-    local discovery_http_status
-    discovery_http_status=$(curl -sSL -w "%{http_code}" \
-        "${discovery_auth_opts[@]}" \
-        -D "$auth_header_file" \
-        -o /dev/null \
-        "$discovery_url")
-
-    if [ "$discovery_http_status" -eq 401 ]; then
-        echo "Received 401 from $discovery_url, attempting to parse Www-Authenticate header."
-        local www_authenticate_header
-        www_authenticate_header=$(grep -i '^Www-Authenticate:' "$auth_header_file" | head -n 1)
-
-        if [ -n "$www_authenticate_header" ]; then
-            echo "Www-Authenticate header: $www_authenticate_header"
-            # Example: Www-Authenticate: Bearer realm="https://gitlab.example.com/jwt/auth",service="container_registry"
-            # Using sed for extraction. This regex assumes realm and service are quoted.
-            TOKEN_REALM=$(echo "$www_authenticate_header" | sed -n 's/.*realm="\([^"]*\)".*/\1/p')
-            TOKEN_SERVICE=$(echo "$www_authenticate_header" | sed -n 's/.*service="\([^"]*\)".*/\1/p')
-            
-            if [ -n "$TOKEN_REALM" ]; then
-                echo "Discovered Realm: $TOKEN_REALM"
-            else
-                echo "Warning: Could not parse realm from Www-Authenticate header." >&2
-            fi
-            if [ -n "$TOKEN_SERVICE" ]; then
-                echo "Discovered Service: $TOKEN_SERVICE"
-            else
-                # Service might be optional or not present in all Www-Authenticate headers for some flows.
-                # Defaulting to 'container_registry' if not found, as it's common for GitLab.
-                echo "Warning: Could not parse service from Www-Authenticate header. Defaulting to 'container_registry'." >&2
-                TOKEN_SERVICE="container_registry"
-            fi
-        else
-            echo "Warning: Received 401 but Www-Authenticate header not found or empty." >&2
-        fi
-    elif [ "$discovery_http_status" -ge 200 ] && [ "$discovery_http_status" -lt 300 ]; then
-        echo "Info: Received $discovery_http_status from $discovery_url. This registry might not require JWT auth or allows anonymous pulls for this path." >&2
-        echo "Proceeding without specific realm/service discovery. If JWT is needed later, it might fail." >&2
-    else
-        echo "Warning: Failed to discover auth params from $discovery_url. HTTP Status: $discovery_http_status" >&2
-        echo "Headers received:" >&2
-        cat "$auth_header_file" >&2
-    fi
-    rm -f "$auth_header_file"
-}
-
-# --- Function to fetch JWT from the token server ---
-fetch_registry_jwt() {
-    echo "Attempting to fetch JWT for registry..."
-    local scope="repository:$IMAGE_PATH:pull"
     # For push, scope would be "repository:$IMAGE_PATH:pull,push"
 
     local jwt_url="$TOKEN_REALM?service=$TOKEN_SERVICE&scope=$scope"
