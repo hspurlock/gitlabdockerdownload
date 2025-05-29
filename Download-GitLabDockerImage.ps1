@@ -39,6 +39,14 @@
     Optional. The directory where the image components will be saved.
     Defaults to ".\docker_image_download".
 
+.PARAMETER AuthRealm
+    Optional. The URL of the token authentication server (realm). 
+    If not provided, the script will attempt to discover it.
+
+.PARAMETER AuthService
+    Optional. The service name for token authentication.
+    If not provided, the script will attempt to discover it (or use a default).
+
 .EXAMPLE
     # Example 1: Using Bearer Token (default)
     .\Download-GitLabDockerImage.ps1 -RegistryUrl "registry.gitlab.com" -ImagePath "myusername/myproject/myimage" -ImageTag "latest" -Token "YOUR_BEARER_TOKEN_HERE"
@@ -48,6 +56,7 @@
 
     These commands download the 'latest' tag of 'myusername/myproject/myimage' from 'registry.gitlab.com'
     using the specified authentication method and save the components.
+
 #>
 param(
     [Parameter(Mandatory=$true)]
@@ -66,7 +75,13 @@ param(
     [string]$Username,   
 
     [Parameter(Mandatory=$false)]
-    [string]$OutputDirectory = ".\docker_image_download"
+    [string]$OutputDirectory = ".\docker_image_download",
+
+    [Parameter(Mandatory=$false)]
+    [string]$AuthRealm,
+
+    [Parameter(Mandatory=$false)]
+    [string]$AuthService
 )
 
 $ErrorActionPreference = "Stop" # Stop on errors
@@ -78,17 +93,221 @@ if (-not (Test-Path $OutputDirectory)) {
 }
 Write-Host "Image components will be saved to: $(Resolve-Path $OutputDirectory)"
 
-# Construct Headers for registry communication
-$headers = @{}
-if (-not [string]::IsNullOrEmpty($Username)) {
-    # Basic Authentication
-    $base64AuthInfo = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("$($Username):$($Token)"))
-    $headers.Add("Authorization", "Basic $base64AuthInfo")
-    Write-Host "Using Basic Authentication (Username: $Username)"
-} else {
-    # Bearer Token Authentication
-    $headers.Add("Authorization", "Bearer $Token")
-    Write-Host "Using Bearer Token Authentication"
+function Discover-GitLabAuthParameters {
+    param(
+        [string]$CurrentRegistryUrl,
+        [string]$InitialToken,
+        [string]$InitialUsername
+    )
+
+    Write-Host "Attempting to discover authentication parameters from $CurrentRegistryUrl..."
+    $discoveryUrl = "https://$($CurrentRegistryUrl)/v2/"
+    $discoveryHeaders = @{}
+
+    if (-not [string]::IsNullOrEmpty($InitialUsername)) {
+        $base64Auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${InitialUsername}:${InitialToken}"))
+        $discoveryHeaders.Add("Authorization", "Basic $base64Auth")
+    } elseif (-not [string]::IsNullOrEmpty($InitialToken)) {
+        $discoveryHeaders.Add("Authorization", "Bearer $InitialToken")
+    }
+
+    try {
+        # Use Invoke-WebRequest to get headers, ignore content for 401
+        Invoke-WebRequest -Uri $discoveryUrl -Method Head -Headers $discoveryHeaders -ErrorAction SilentlyContinue -MaximumRedirection 0
+        # If it didn't throw, it means we got a 2xx, which is unusual for discovery but possible for public repos
+        Write-Host "Info: Received 2xx from $discoveryUrl. This registry might not require JWT auth or allows anonymous pulls for this path."
+        Write-Host "Proceeding without specific realm/service discovery. If JWT is needed later, it might fail."
+    } catch {
+        $response = $_.Exception.Response
+        if ($null -ne $response -and $response.StatusCode -eq [System.Net.HttpStatusCode]::Unauthorized) {
+            Write-Host "Received 401 from $discoveryUrl, attempting to parse Www-Authenticate header."
+            $wwwAuthenticateHeader = $response.Headers['Www-Authenticate']
+            if (-not [string]::IsNullOrEmpty($wwwAuthenticateHeader)) {
+                Write-Host "Www-Authenticate header: $wwwAuthenticateHeader"
+                # Example: Bearer realm="https://gitlab.example.com/jwt/auth",service="container_registry"
+                $realmMatch = [regex]::Match($wwwAuthenticateHeader, 'realm="([^"]*)"')
+                $serviceMatch = [regex]::Match($wwwAuthenticateHeader, 'service="([^"]*)"')
+
+                if ($realmMatch.Success) {
+                    $script:TokenRealm = $realmMatch.Groups[1].Value
+                    Write-Host "Discovered Realm: $($script:TokenRealm)"
+                } else {
+                    Write-Warning "Could not parse realm from Www-Authenticate header."
+                }
+                if ($serviceMatch.Success) {
+                    $script:TokenService = $serviceMatch.Groups[1].Value
+                    Write-Host "Discovered Service: $($script:TokenService)"
+                } else {
+                    Write-Warning "Could not parse service from Www-Authenticate header. Defaulting to 'container_registry'."
+                    $script:TokenService = "container_registry"
+                }
+            } else {
+                Write-Warning "Received 401 but Www-Authenticate header not found or empty."
+            }
+        } else {
+            $statusCode = "Unknown"
+            if ($null -ne $response) { $statusCode = $response.StatusCode }
+            Write-Warning "Failed to discover auth params from $discoveryUrl. HTTP Status: $statusCode"
+            if ($null -ne $response) { Write-Warning "Response Headers: $($response.Headers | Out-String)" }
+        }
+    }
+}
+
+# Discover auth parameters and apply overrides
+Discover-GitLabAuthParameters -CurrentRegistryUrl $RegistryUrl -InitialToken $Token -InitialUsername $Username
+
+if (-not [string]::IsNullOrEmpty($AuthRealm)) {
+    Write-Host "Overriding discovered/default TokenRealm with command-line value: $AuthRealm"
+    $script:TokenRealm = $AuthRealm
+}
+if (-not [string]::IsNullOrEmpty($AuthService)) {
+    Write-Host "Overriding discovered/default TokenService with command-line value: $AuthService"
+    $script:TokenService = $AuthService
+}
+
+if ([string]::IsNullOrEmpty($script:TokenRealm)) {
+    Write-Error "Token Authentication Realm (TokenRealm) is not set. It could not be discovered and was not provided via -AuthRealm parameter. Cannot proceed with JWT authentication."
+    exit 1
+}
+if ([string]::IsNullOrEmpty($script:TokenService)) {
+    Write-Warning "TokenService is not set. Defaulting to 'container_registry'. Provide -AuthService if this is incorrect."
+    $script:TokenService = "container_registry"
+}
+
+Write-Host "Using TokenRealm: $($script:TokenRealm)"
+Write-Host "Using TokenService: $($script:TokenService)"
+
+function Get-GitLabRegistryJwt {
+    param(
+        [string]$JwtRealm,
+        [string]$JwtService,
+        [string]$TargetImagePath,
+        [string]$OriginalToken,
+        [string]$OriginalUsername
+    )
+
+    Write-Host "Attempting to fetch JWT for registry..."
+    $scope = "repository:$($TargetImagePath):pull"
+    # For push, scope would be "repository:$TargetImagePath:pull,push"
+
+    $jwtUrl = "$($JwtRealm)?service=$($JwtService)&scope=$($scope)"
+    Write-Host "Requesting JWT from: $jwtUrl"
+
+    $jwtRequestHeaders = @{}
+    if (-not [string]::IsNullOrEmpty($OriginalUsername)) {
+        $base64Auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${OriginalUsername}:${OriginalToken}"))
+        $jwtRequestHeaders.Add("Authorization", "Basic $base64Auth")
+        Write-Host "Using Basic Authentication (Username: $OriginalUsername) for JWT server."
+    } else {
+        $jwtRequestHeaders.Add("Authorization", "Bearer $OriginalToken")
+        Write-Host "Using Bearer Token Authentication for JWT server."
+    }
+    $jwtRequestHeaders.Add("Accept", "application/json")
+
+    try {
+        $jwtResponse = Invoke-RestMethod -Uri $jwtUrl -Headers $jwtRequestHeaders -Method Get -ContentType "application/json"
+        if ($jwtResponse.token) {
+            $script:RegistryJwt = $jwtResponse.token
+        } elseif ($jwtResponse.access_token) {
+            $script:RegistryJwt = $jwtResponse.access_token
+        } else {
+            Write-Error "JWT not found in response from token server. Response: $($jwtResponse | ConvertTo-Json -Depth 5)"
+            return $false
+        }
+        Write-Host "Successfully fetched JWT."
+        return $true
+    } catch {
+        $statusCode = "Unknown"
+        $responseContent = "No response content"
+        if ($_.Exception.Response) {
+            $statusCode = $_.Exception.Response.StatusCode
+            $responseContent = $_.Exception.Response.Content
+        }
+        Write-Error "Failed to fetch JWT. Status: $statusCode | Response: $responseContent"
+        $script:RegistryJwt = $null # Ensure JWT is cleared on failure
+        return $false
+    }
+}
+
+# Script-level variables for JWT auth
+$script:RegistryJwt = $null
+$script:TokenRealm = $null
+$script:TokenService = $null
+
+function Invoke-GitLabRegistryRequest {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Uri,
+
+        [Parameter(Mandatory=$true)]
+        [hashtable]$Headers,
+
+        [Parameter(Mandatory=$true)]
+        [string]$Method,
+
+        [string]$ContentType,
+
+        [string]$OutFile,
+
+        [switch]$AllowRetry = $true
+    )
+
+    $attempt = 1
+    $maxAttempts = 2
+
+    while ($attempt -le $maxAttempts) {
+        Write-Verbose "Invoke-GitLabRegistryRequest: Attempt $attempt for $Uri"
+        if ([string]::IsNullOrEmpty($script:RegistryJwt)) {
+            Write-Verbose "No active JWT, attempting to fetch..."
+            if (-not (Get-GitLabRegistryJwt -JwtRealm $script:TokenRealm -JwtService $script:TokenService -TargetImagePath $ImagePath -OriginalToken $Token -OriginalUsername $Username)) {
+                Write-Error "Failed to obtain JWT for request to $Uri. Cannot proceed."
+                throw "JWT acquisition failed."
+            }
+        }
+
+        $requestHeaders = $Headers.Clone() # Clone to avoid modifying original headers object passed in
+        $requestHeaders.Authorization = "Bearer $($script:RegistryJwt)"
+
+        try {
+            $invokeParams = @{
+                Uri = $Uri
+                Headers = $requestHeaders
+                Method = $Method
+                ErrorAction = 'Stop' # Ensure we catch errors to check status code
+            }
+            if (-not [string]::IsNullOrEmpty($ContentType)) {
+                $invokeParams.ContentType = $ContentType
+            }
+            if (-not [string]::IsNullOrEmpty($OutFile)) {
+                $invokeParams.OutFile = $OutFile
+                # For OutFile, Invoke-RestMethod doesn't return body, so we just execute
+                Invoke-RestMethod @invokeParams
+                # To mimic bash script, we might need to return a synthetic success object or rely on no exception
+                # For simplicity, if OutFile is used, success is no exception. Caller checks file existence/content.
+                return $true # Indicate success for OutFile operations
+            } else {
+                return Invoke-RestMethod @invokeParams
+            }
+        } catch {
+            $exceptionResponse = $_.Exception.Response
+            if ($null -ne $exceptionResponse -and $exceptionResponse.StatusCode -eq [System.Net.HttpStatusCode]::Unauthorized) {
+                Write-Warning "Request to $Uri failed with 401 (Unauthorized). Current JWT might be invalid or expired."
+                $script:RegistryJwt = $null # Clear JWT
+                if ($AllowRetry -and $attempt -lt $maxAttempts) {
+                    Write-Host "Attempting to refresh JWT and retry request ($($attempt + 1)/$maxAttempts)..."
+                    $attempt++
+                    continue # Retry the while loop
+                }
+                Write-Error "Failed request to $Uri after JWT refresh attempt or retry disabled. Status: 401"
+                throw $_ # Re-throw the original exception if retries exhausted or not allowed
+            } else {
+                # For other errors, just re-throw
+                Write-Error "Request to $Uri failed. Status: $($exceptionResponse.StatusCode)"
+                throw $_ 
+            }
+        }
+    }
 }
 
 # 1. Fetch the manifest
@@ -97,24 +316,16 @@ $manifestUrl = "https://$($RegistryUrl)/v2/$($ImagePath)/manifests/$($ImageTag)"
 Write-Host "Fetching manifest from: $manifestUrl"
 
 # Request multiple manifest types. The registry will return the most specific one it supports.
-$manifestHeaders = $headers.Clone() # Clone base headers
-$manifestHeaders.Add("Accept", "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json")
+$manifestRequestHeaders = @{
+    "Accept" = "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json"
+}
 
 $manifestResponse = $null
 try {
-    $manifestResponse = Invoke-RestMethod -Uri $manifestUrl -Headers $manifestHeaders -Method Get -ContentType "application/json"
+    $manifestResponse = Invoke-GitLabRegistryRequest -Uri $manifestUrl -Headers $manifestRequestHeaders -Method Get -ContentType "application/json"
 } catch {
-    $statusCode = "Unknown"
-    $responseContent = "No response content"
-    if ($_.Exception.Response) {
-        $statusCode = $_.Exception.Response.StatusCode
-        $responseContent = $_.Exception.Response.Content
-    }
-    Write-Error "Failed to fetch manifest. Status: $statusCode | Response: $responseContent"
-    if ($statusCode -eq 401) {
-        Write-Warning "Received 401 (Unauthorized). Ensure your token is correct, has 'read_registry' scope, and is not expired."
-        Write-Warning "For some GitLab setups, you might need to authenticate against a different endpoint first to get a registry-specific JWT, but this script assumes direct token use."
-    }
+    Write-Error "Failed to fetch manifest from $manifestUrl after retries. Error: $($_.Exception.Message)"
+    # Additional error details can be logged if needed from $_.Exception
     exit 1
 }
 
@@ -156,21 +367,15 @@ if ($manifestMediaType -eq "application/vnd.docker.distribution.manifest.list.v2
 
     # Fetch the selected architecture-specific manifest
     $specificManifestUrl = "https://$($RegistryUrl)/v2/$($ImagePath)/manifests/$($selectedManifestDigest)"
-    $specificManifestHeaders = $headers.Clone()
-    # Request specific manifest types for single architecture images
-    $specificManifestHeaders.Add("Accept", "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json")
+    $specificArchManifestRequestHeaders = @{
+        "Accept" = "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json"
+    }
     
     Write-Host "Fetching specific architecture manifest ($selectedManifestDigest) from: $specificManifestUrl"
     try {
-        $actualManifest = Invoke-RestMethod -Uri $specificManifestUrl -Headers $specificManifestHeaders -Method Get -ContentType "application/json"
+        $actualManifest = Invoke-GitLabRegistryRequest -Uri $specificManifestUrl -Headers $specificArchManifestRequestHeaders -Method Get -ContentType "application/json"
     } catch {
-        $statusCode = "Unknown"
-        $responseContent = "No response content"
-        if ($_.Exception.Response) {
-            $statusCode = $_.Exception.Response.StatusCode
-            $responseContent = $_.Exception.Response.Content
-        }
-        Write-Error "Failed to fetch specific architecture manifest $selectedManifestDigest. Status: $statusCode | Response: $responseContent"
+        Write-Error "Failed to fetch specific architecture manifest $selectedManifestDigest from $specificManifestUrl after retries. Error: $($_.Exception.Message)"
         exit 1
     }
 
@@ -212,18 +417,14 @@ $configFileName = "$($configDigest -replace ':', '_').json"
 $configOutputPath = Join-Path $OutputDirectory $configFileName
 
 Write-Host "Downloading image config ($configDigest) from: $configUrl"
+$blobHeaders = @{}
+# Add specific Accept header if needed for config, e.g., $blobHeaders.Accept = $imageConfigDescriptor.mediaType
+# However, for direct blob downloads, often no specific Accept is strictly necessary beyond what the JWT provides.
 try {
-    # Using Invoke-WebRequest for potentially better handling of binary/JSON downloads to file
-    Invoke-WebRequest -Uri $configUrl -Headers $headers -Method Get -OutFile $configOutputPath
+    Invoke-GitLabRegistryRequest -Uri $configUrl -Headers $blobHeaders -Method Get -OutFile $configOutputPath
     Write-Host "Image config saved to $configOutputPath"
 } catch {
-    $statusCode = "Unknown"
-    $responseContent = "No response content"
-    if ($_.Exception.Response) {
-        $statusCode = $_.Exception.Response.StatusCode
-        $responseContent = $_.Exception.Response.Content
-    }
-    Write-Error "Failed to download image config blob $configDigest. Status: $statusCode | Response: $responseContent"
+    Write-Error "Failed to download image config blob $configDigest from $configUrl after retries. Error: $($_.Exception.Message)"
     exit 1
 }
 
@@ -252,18 +453,13 @@ foreach ($layer in $layerDescriptors) {
     $layerOutputPath = Join-Path $layersDir $layerFileName
     
     Write-Host "Downloading layer $layerDigest (Type: $layerMediaType, Size: $($layer.size) bytes) from: $layerUrl"
+    $blobHeaders = @{}
+    # Add specific Accept header if needed for layer, e.g., $blobHeaders.Accept = $layerMediaType
     try {
-        Invoke-WebRequest -Uri $layerUrl -Headers $headers -Method Get -OutFile $layerOutputPath
+        Invoke-GitLabRegistryRequest -Uri $layerUrl -Headers $blobHeaders -Method Get -OutFile $layerOutputPath
         Write-Host "Layer $layerDigest saved to $layerOutputPath"
     } catch {
-        $statusCode = "Unknown"
-        $responseContent = "No response content"
-        if ($_.Exception.Response) {
-            $statusCode = $_.Exception.Response.StatusCode
-            $responseContent = $_.Exception.Response.Content
-        }
-        Write-Error "Failed to download layer $layerDigest. Status: $statusCode | Response: $responseContent"
-        # If a layer fails, the image is incomplete. Decide if to continue or exit.
+        Write-Error "Failed to download layer $layerDigest from $layerUrl after retries. Error: $($_.Exception.Message)"
         exit 1 # Exiting on first layer failure for simplicity
     }
 }

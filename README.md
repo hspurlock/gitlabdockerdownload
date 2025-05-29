@@ -30,10 +30,11 @@ This is useful for:
     *   Example: `"latest"`, `"1.0.0"`, `"feature-branch"`
 *   `-Token` (string, Mandatory): Your GitLab access token (PAT, Deploy Token, CI Job Token) with `read_registry` scope.
     *   If `-Username` is provided, this `Token` is used as the password for Basic Authentication.
-    *   Otherwise, it's used as a Bearer token.
+    *   Otherwise, it's used as a Bearer token for authenticating to the JWT token endpoint.
+    *   The script primarily uses JWT authentication for registry access if the registry indicates it's required (via a `Www-Authenticate` header). The provided token is used to obtain this JWT.
     *   Example: `"glpat-xxxxxxxxxxxxxxxxxxxx"`
 *   `-Username` (string, Optional): The username for HTTP Basic Authentication.
-    *   If provided, the script uses Basic Auth (`Username`:`Token`) instead of Bearer Token authentication.
+    *   If provided, the script uses Basic Auth (`Username`:`Token`) for authenticating to the JWT token endpoint.
     *   Common values:
         *   Your GitLab username (when using a Personal Access Token for `-Token`).
         *   The Deploy Token's username (when using a Deploy Token for `-Token`).
@@ -42,6 +43,12 @@ This is useful for:
 *   `-OutputDirectory` (string, Optional): The local directory where the image components (manifests, config, layers) will be saved. 
     *   Defaults to `.\docker_image_download` (a subdirectory created in the current working directory).
     *   Example: `"C:\temp\my_downloaded_image"`, `"./downloaded_image_files"`
+*   `-AuthRealm` (string, Optional): The URL of the token authentication server (realm) for JWT authentication. 
+    *   If not provided, the script attempts to discover this from the registry's `Www-Authenticate` header.
+    *   Example: `"https://gitlab.example.com/jwt/auth"`
+*   `-AuthService` (string, Optional): The service name for JWT token authentication.
+    *   If not provided, the script attempts to discover this. Defaults to `"container_registry"` if discovery fails to find a specific service name.
+    *   Example: `"container_registry"`
 
 ### Example Commands
 
@@ -55,7 +62,7 @@ This is useful for:
 ./Download-GitLabDockerImage.ps1 -RegistryUrl "registry.gitlab.com" -ImagePath "mygroup/myproject/myimage" -ImageTag "latest" -Username "your_gitlab_username" -Token "YOUR_PERSONAL_ACCESS_TOKEN_HERE" -OutputDirectory "./my_image_components"
 ```
 
-Replace the placeholder values with your specific details. The script will use the chosen authentication method.
+Replace the placeholder values with your specific details. The script will attempt to use JWT authentication by discovering parameters, then use the provided Token (and Username, if any) to fetch a JWT. This JWT is then used for all registry operations. The `-AuthRealm` and `-AuthService` parameters can be used to override discovered values.
 
 ## Output
 
@@ -69,9 +76,15 @@ The script will create the specified output directory (or `docker_image_download
 ## Troubleshooting
 
 *   **401 Unauthorized:** 
-    *   Ensure your token is correct and has not expired.
-    *   Verify the token has the `read_registry` scope.
-    *   For some self-managed GitLab instances, token authentication mechanisms might differ slightly. The script now supports both Bearer token and Basic Authentication (username/password).
+    *   The script now uses a multi-step JWT authentication flow if required by the registry:
+        1.  **Discovery**: It first attempts to discover the JWT `realm` and `service` from the registry's `Www-Authenticate` header (typically from a 401 response to a `/v2/` ping).
+        2.  **JWT Fetch**: It then requests a JWT from this `realm` using your provided `-Token` (and `-Username` if supplied) for authentication.
+        3.  **Registry Access**: This obtained JWT is then used as a Bearer token for all subsequent requests to download manifests, configs, and layers.
+    *   **Troubleshooting Steps**:
+        *   Ensure your `-Token` is correct, not expired, and has `read_registry` scope.
+        *   If discovery fails or seems incorrect (check script output), use the `-AuthRealm` and `-AuthService` parameters to provide these values manually.
+        *   Verify network connectivity to both the registry URL and the (potentially different) JWT authentication realm URL.
+        *   Check the script's verbose output for details on discovered parameters and JWT fetch attempts.
 *   **Manifest Fetch Issues:** The script attempts to fetch common manifest types. If you encounter issues with a specific registry or image, the manifest media type might be different or unexpected. The script saves unknown manifest types for debugging.
 *   **Network Issues:** Ensure the machine running the script can reach the GitLab registry URL over HTTPS.
 
@@ -145,12 +158,15 @@ You can typically install `curl` and `jq` using your system's package manager:
 *   `-r <registry_url>`: (Mandatory) FQDN of the GitLab Container Registry (e.g., `registry.gitlab.com`).
 *   `-i <image_path>`: (Mandatory) Full path of the image (e.g., `mygroup/myproject/myimage`).
 *   `-t <image_tag>`: (Mandatory) Tag of the image (e.g., `latest`, `1.0.0`).
-*   `-k <token>`: (Mandatory) GitLab Token (PAT, Deploy Token, CI Job Token) with `read_registry` scope. Used as the password if `-U` is provided, otherwise as a Bearer token.
-*   `-U <username>`: (Optional) Username for HTTP Basic Authentication. If provided, the script uses Basic Auth (`username:token`). Common values:
+*   `-k <token>`: (Mandatory) GitLab Token (PAT, Deploy Token, CI Job Token) with `read_registry` scope. Used as the password if `-U` is provided for Basic Auth to the JWT token endpoint, otherwise as a Bearer token to the JWT token endpoint.
+    *   The script primarily uses JWT authentication for registry access if the registry indicates it's required. This token is used to obtain the JWT.
+*   `-U <username>`: (Optional) Username for HTTP Basic Authentication. If provided, the script uses Basic Auth (`username:token`) for authenticating to the JWT token endpoint. Common values:
     *   Your GitLab username (when using a Personal Access Token for `-k`).
     *   The Deploy Token's username (when using a Deploy Token for `-k`).
     *   `gitlab-ci-token` (when using a `CI_JOB_TOKEN` for `-k`).
 *   `-o <output_directory>`: (Optional) Directory to save image components. Defaults to `./docker_image_download`.
+*   `-A <auth_realm_url>`: (Optional) The URL of the token authentication server (realm) for JWT authentication. Overrides auto-discovery.
+*   `-S <auth_service_name>`: (Optional) The service name for JWT token authentication. Overrides auto-discovery (defaults to `container_registry` if not discovered or provided).
 
 ### Example Commands (download_gitlab_docker_image.sh)
 
@@ -175,4 +191,13 @@ You can typically install `curl` and `jq` using your system's package manager:
     -o "./my_image_components_bash"
 ```
 
-These commands will download the components of the specified image into the `./my_image_components_bash` directory using the chosen authentication method.
+These commands will download the components of the specified image into the `./my_image_components_bash` directory. The script attempts to use JWT authentication by discovering parameters, then uses the provided token (and username, if any) to fetch a JWT. This JWT is then used for all registry operations. The `-A` and `-S` parameters can be used to override discovered values.
+
+### Troubleshooting (download_gitlab_docker_image.sh)
+
+*   **Authentication Issues (401 Unauthorized)**:
+    *   The script uses a multi-step JWT authentication flow similar to the PowerShell version if the registry requires it (discovery of realm/service, JWT fetch using your token, then registry access with JWT).
+    *   Ensure your `-k <token>` is correct, has `read_registry` scope, and is not expired.
+    *   If auto-discovery of JWT parameters fails (check script output for messages like "Attempting to discover authentication parameters"), use the `-A <auth_realm_url>` and `-S <auth_service_name>` options to provide them manually.
+    *   Verify `curl` and `jq` are installed and accessible.
+    *   Check script output for detailed error messages from `curl` or JWT fetch steps.
