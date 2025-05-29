@@ -182,6 +182,10 @@ echo "Image components will be saved to: $(realpath "$OUTPUT_DIR")"
 # Returns HTTP status code via stdout if no output file, or writes to file and echoes status code.
 # Saves response headers to a temporary file for inspection.
 
+# --- Function to fetch JWT from the token server ---
+fetch_registry_jwt() {
+    echo "Attempting to fetch JWT for registry..."
+    local scope="repository:$IMAGE_PATH:pull"
     # For push, scope would be "repository:$IMAGE_PATH:pull,push"
 
     local jwt_url="$TOKEN_REALM?service=$TOKEN_SERVICE&scope=$scope"
