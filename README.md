@@ -102,3 +102,47 @@ This command would:
 1.  Look for the layer file at `.\my_image_components\layers\sha256_abcdef12345.tar.gz`.
 2.  Attempt to find `app/settings.production.json` inside that layer.
 3.  Save it as `production_settings.json` in the `.\configs_from_image` directory.
+
+## Download GitLab Docker Image (Bash Script)
+
+For users who prefer or require a Bash environment, `download_gitlab_docker_image.sh` provides similar functionality to the PowerShell download script. It uses `curl` for network requests and `jq` for parsing JSON responses.
+
+### Prerequisites (for download_gitlab_docker_image.sh)
+
+1.  **Bash**: A Bash-compatible shell.
+2.  **`curl`**: The command-line tool for transferring data with URLs.
+3.  **`jq`**: The command-line JSON processor.
+4.  **Executable Permissions**: The script must be made executable (`chmod +x download_gitlab_docker_image.sh`).
+
+You can typically install `curl` and `jq` using your system's package manager:
+*   Debian/Ubuntu: `sudo apt update && sudo apt install -y curl jq`
+*   Fedora: `sudo dnf install -y curl jq`
+*   macOS (with Homebrew): `brew install curl jq`
+
+### Usage (download_gitlab_docker_image.sh)
+
+1.  Open a Bash terminal.
+2.  Navigate to the directory containing the `download_gitlab_docker_image.sh` script.
+3.  Ensure the script is executable: `chmod +x download_gitlab_docker_image.sh`.
+4.  Execute the script with the required parameters.
+
+### Parameters (download_gitlab_docker_image.sh)
+
+*   `-r <registry_url>`: (Mandatory) FQDN of the GitLab Container Registry (e.g., `registry.gitlab.com`).
+*   `-i <image_path>`: (Mandatory) Full path of the image (e.g., `mygroup/myproject/myimage`).
+*   `-t <image_tag>`: (Mandatory) Tag of the image (e.g., `latest`, `1.0.0`).
+*   `-k <token>`: (Mandatory) GitLab Token (PAT, Deploy Token, CI Job Token) with `read_registry` scope.
+*   `-o <output_directory>`: (Optional) Directory to save image components. Defaults to `./docker_image_download`.
+
+### Example Command (download_gitlab_docker_image.sh)
+
+```bash
+./download_gitlab_docker_image.sh \\
+    -r "registry.gitlab.com" \\
+    -i "mygroup/myproject/myimage" \\
+    -t "latest" \\
+    -k "YOUR_GITLAB_TOKEN_HERE" \\
+    -o "./my_image_components_bash"
+```
+
+This command will download the components of the specified image into the `./my_image_components_bash` directory.
