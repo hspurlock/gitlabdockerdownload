@@ -36,6 +36,7 @@ This is useful for:
 
 ### Example Command
 
+
 ```powershell
 ./Download-GitLabDockerImage.ps1 -RegistryUrl "registry.gitlab.com" -ImagePath "mygroup/myproject/myimage" -ImageTag "latest" -Token "YOUR_GITLAB_TOKEN_HERE" -OutputDirectory "./my_image_components"
 ```
@@ -59,3 +60,45 @@ The script will create the specified output directory (or `docker_image_download
     *   For some self-managed GitLab instances, token authentication mechanisms might differ slightly. This script uses standard Bearer token authentication.
 *   **Manifest Fetch Issues:** The script attempts to fetch common manifest types. If you encounter issues with a specific registry or image, the manifest media type might be different or unexpected. The script saves unknown manifest types for debugging.
 *   **Network Issues:** Ensure the machine running the script can reach the GitLab registry URL over HTTPS.
+
+## Extract File From Docker Layer Script
+
+This repository also includes `Extract-FileFromDockerLayer.ps1`, a PowerShell script designed to extract a specific file from a downloaded Docker image layer (which are typically `.tar` or `.tar.gz` archives).
+
+This is useful for:
+- Inspecting specific configuration files, binaries, or other assets within a layer without fully reconstructing the image.
+- Retrieving individual files when you know which layer contains them.
+
+### Prerequisites (for Extract-FileFromDockerLayer.ps1)
+
+1.  **PowerShell**: Version 5.0 or later is recommended for `Expand-Archive` compatibility with `.tar.gz` files.
+2.  **Downloaded Layer File**: You need a layer file, typically obtained using the `Download-GitLabDockerImage.ps1` script.
+
+### Usage (Extract-FileFromDockerLayer.ps1)
+
+1.  Open a PowerShell terminal.
+2.  Navigate to the directory containing the `Extract-FileFromDockerLayer.ps1` script.
+3.  Execute the script with the required parameters.
+
+### Parameters (Extract-FileFromDockerLayer.ps1)
+
+*   `-LayerFilePath` (string, Mandatory): The full path to the Docker image layer file.
+    *   Example: `".\my_image_components\layers\sha256_abcdef12345.tar.gz"`
+*   `-FileToExtractPathInLayer` (string, Mandatory): The relative path of the file *inside* the layer's archive.
+    *   Example: `"app/config.ini"`, `"usr/local/bin/mytool"`
+    *   **Note**: It's best to use relative paths without a leading slash. You might need to inspect the tarball's contents (e.g., using `tar -tvf <layer_file>`) to find the exact path.
+*   `-OutputDirectory` (string, Mandatory): The directory where the extracted file will be saved. The script will attempt to create it if it doesn't exist.
+    *   Example: `".\extracted_files"`
+*   `-OutputFileName` (string, Optional): The name to give the extracted file. If not specified, the original filename from the archive is used.
+    *   Example: `"my_specific_config.ini"`
+
+### Example Command (Extract-FileFromDockerLayer.ps1)
+
+```powershell
+./Extract-FileFromDockerLayer.ps1 -LayerFilePath ".\my_image_components\layers\sha256_abcdef12345.tar.gz" -FileToExtractPathInLayer "app/settings.production.json" -OutputDirectory ".\configs_from_image" -OutputFileName "production_settings.json"
+```
+
+This command would:
+1.  Look for the layer file at `.\my_image_components\layers\sha256_abcdef12345.tar.gz`.
+2.  Attempt to find `app/settings.production.json` inside that layer.
+3.  Save it as `production_settings.json` in the `.\configs_from_image` directory.
