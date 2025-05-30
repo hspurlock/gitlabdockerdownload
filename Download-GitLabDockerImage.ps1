@@ -102,24 +102,28 @@ function Discover-GitLabAuthParameters {
 
     Write-Host "Attempting to discover authentication parameters from $CurrentRegistryUrl..."
     $discoveryUrl = "https://$($CurrentRegistryUrl)/v2/"
-    $discoveryHeaders = @{}
+    $discoveryRequestParams = @{
+        Uri = $discoveryUrl
+        Method = "Get"
+        Headers = @{
+            "Accept" = "application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json"
+        }
+        SkipHttpErrorCheck = $true # We expect a 401
+    }
 
-    if (-not [string]::IsNullOrEmpty($InitialUsername)) {
-        $base64Auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${InitialUsername}:${InitialToken}"))
-        $discoveryHeaders.Add("Authorization", "Basic $base64Auth")
-    } elseif (-not [string]::IsNullOrEmpty($InitialToken)) {
-        $discoveryHeaders.Add("Authorization", "Bearer $InitialToken")
+    if ($InitialUsername) {
+        $credential = New-Object System.Management.Automation.PSCredential($InitialUsername, (ConvertTo-SecureString $InitialToken -AsPlainText -Force))
+        $discoveryRequestParams.Credential = $credential
+    } elseif ($InitialToken) { # Original token as Bearer for discovery if no username
+        $discoveryRequestParams.Headers["Authorization"] = "Bearer $InitialToken"
     }
 
     try {
-        # Use Invoke-WebRequest to get headers, ignore content for 401
-        Invoke-WebRequest -Uri $discoveryUrl -Method Head -Headers $discoveryHeaders -ErrorAction SilentlyContinue -MaximumRedirection 0
-        # If it didn't throw, it means we got a 2xx, which is unusual for discovery but possible for public repos
-        Write-Host "Info: Received 2xx from $discoveryUrl. This registry might not require JWT auth or allows anonymous pulls for this path."
-        Write-Host "Proceeding without specific realm/service discovery. If JWT is needed later, it might fail."
-    } catch {
-        $response = $_.Exception.Response
-        if ($null -ne $response -and $response.StatusCode -eq [System.Net.HttpStatusCode]::Unauthorized) {
+        # Make a GET request to the /v2/ endpoint to trigger a 401 and get Www-Authenticate
+        Invoke-RestMethod @discoveryRequestParams
+    } catch [System.Net.WebException] {
+        if ($_.Exception.Response -is [System.Net.HttpWebResponse] -and $_.Exception.Response.StatusCode -eq [System.Net.HttpStatusCode]::Unauthorized) {
+            $response = $_.Exception.Response
             Write-Host "Received 401 from $discoveryUrl, attempting to parse Www-Authenticate header."
             $wwwAuthenticateHeader = $response.Headers['Www-Authenticate']
             if (-not [string]::IsNullOrEmpty($wwwAuthenticateHeader)) {
@@ -188,22 +192,30 @@ function Get-GitLabRegistryJwt {
     $scope = "repository:$($TargetImagePath):pull"
     # For push, scope would be "repository:$TargetImagePath:pull,push"
 
-    $jwtUrl = "$($JwtRealm)?service=$($JwtService)&scope=$($scope)"
-    Write-Host "Requesting JWT from: $jwtUrl"
+    $tokenUrl = "$($JwtRealm)?service=$($JwtService)&scope=repository:$($ImagePath):pull"
+    $bodyString = "grant_type=password&client_id=docker&access_type=offline"
 
-    $jwtRequestHeaders = @{}
-    if (-not [string]::IsNullOrEmpty($OriginalUsername)) {
-        $base64Auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${OriginalUsername}:${OriginalToken}"))
-        $jwtRequestHeaders.Add("Authorization", "Basic $base64Auth")
-        Write-Host "Using Basic Authentication (Username: $OriginalUsername) for JWT server."
-    } else {
-        $jwtRequestHeaders.Add("Authorization", "Bearer $OriginalToken")
-        Write-Host "Using Bearer Token Authentication for JWT server."
+    $tokenRequestParams = @{
+        Uri = $tokenUrl
+        Method = "Post"
+        Headers = @{ "Content-Type" = "application/x-www-form-urlencoded" }
+        Body = $bodyString
     }
-    $jwtRequestHeaders.Add("Accept", "application/json")
+
+    if ($OriginalUsername) {
+        # For regular username/password (or PAT as password) to the token endpoint
+        $credential = New-Object System.Management.Automation.PSCredential($OriginalUsername, (ConvertTo-SecureString $OriginalToken -AsPlainText -Force))
+        $tokenRequestParams.Credential = $credential
+    } else {
+        # For PAT/Deploy token directly as Bearer to token endpoint if username not given
+        $tokenRequestParams.Headers["Authorization"] = "Bearer $OriginalToken"
+    }
+
+    Write-Host "Requesting JWT from $tokenUrl (Username: $($OriginalUsername -ne $null))"
+    # Write-Verbose "JWT Request Parameters: $($tokenRequestParams | Format-List | Out-String)" # Too verbose for normal operation
 
     try {
-        $jwtResponse = Invoke-RestMethod -Uri $jwtUrl -Headers $jwtRequestHeaders -Method Get -ContentType "application/json"
+        $jwtResponse = Invoke-RestMethod @tokenRequestParams
         if ($jwtResponse.token) {
             $script:RegistryJwt = $jwtResponse.token
         } elseif ($jwtResponse.access_token) {
