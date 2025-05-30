@@ -16,6 +16,7 @@ USERNAME=""
 AUTH_REALM=""
 AUTH_SERVICE=""
 REQUESTED_JWT_SCOPE="api" # Default scope for generic packages API
+DEBUG_MODE="false"
 
 # Internal JWT state
 TOKEN_REALM=""
@@ -37,7 +38,7 @@ echo_info() {
 }
 
 usage() {
-    echo "Usage: $0 -g <gitlab_url> -p <project_id_or_path> -n <package_name> -v <package_version> -f <file_to_upload> -k <token> [-U <username>] [-A <auth_realm>] [-S <auth_service>] [--scope <jwt_scope>]"
+    echo "Usage: $0 -g <gitlab_url> -p <project_id_or_path> -n <package_name> -v <package_version> -f <file_to_upload> -k <token> [-U <username>] [-A <auth_realm>] [-S <auth_service>] [--scope <jwt_scope>] [-D]"
     echo ""
     echo "Parameters:"
     echo "  -g <gitlab_url>          : GitLab instance URL (e.g., gitlab.com, gitlab.mycompany.com)"
@@ -50,6 +51,7 @@ usage() {
     echo "  -A <auth_realm>          : (Optional) JWT authentication realm URL. Overrides discovery."
     echo "  -S <auth_service>        : (Optional) JWT authentication service name. Overrides discovery."
     echo "  --scope <jwt_scope>      : (Optional) Scope for JWT request. Defaults to 'api'."
+    echo "  -D                       : (Optional) Enable debug mode (prints more verbose output)."
     echo ""
     echo "Example:"
     echo "  $0 -g gitlab.com -p mygroup/myproject -n mypackage -v 1.0.0 -f ./artifact.zip -k YOUR_GITLAB_TOKEN"
@@ -57,7 +59,7 @@ usage() {
 }
 
 # --- Argument Parsing ---
-while getopts ":g:p:n:v:f:k:U:A:S:-:" opt; do
+while getopts ":g:p:n:v:f:k:U:A:S:D-:" opt; do
     case ${opt} in
         g) GITLAB_URL=$OPTARG ;; 
         p) PROJECT_ID_OR_PATH=$OPTARG ;; 
@@ -68,6 +70,7 @@ while getopts ":g:p:n:v:f:k:U:A:S:-:" opt; do
         U) USERNAME=$OPTARG ;; 
         A) AUTH_REALM=$OPTARG ;; 
         S) AUTH_SERVICE=$OPTARG ;; 
+        D) DEBUG_MODE="true" ;; 
         -) 
             case "${OPTARG}" in
                 scope) REQUESTED_JWT_SCOPE="${!OPTIND}"; OPTIND=$((OPTIND + 1)) ;;
@@ -112,6 +115,14 @@ PACKAGE_NAME_ENCODED=$(echo "$PACKAGE_NAME" | jq -sRr @uri)
 PACKAGE_VERSION_ENCODED=$(echo "$PACKAGE_VERSION" | jq -sRr @uri)
 UPLOAD_FILE_BASENAME=$(basename "$FILE_TO_UPLOAD")
 UPLOAD_FILE_BASENAME_ENCODED=$(echo "$UPLOAD_FILE_BASENAME" | jq -sRr @uri)
+
+if [ "$DEBUG_MODE" = "true" ]; then
+    echo_info "[DEBUG] GITLAB_URL_BASE: $GITLAB_URL_BASE"
+    echo_info "[DEBUG] PROJECT_IDENTIFIER_ENCODED: $PROJECT_IDENTIFIER_ENCODED"
+    echo_info "[DEBUG] PACKAGE_NAME_ENCODED: $PACKAGE_NAME_ENCODED"
+    echo_info "[DEBUG] PACKAGE_VERSION_ENCODED: $PACKAGE_VERSION_ENCODED"
+    echo_info "[DEBUG] UPLOAD_FILE_BASENAME_ENCODED: $UPLOAD_FILE_BASENAME_ENCODED"
+fi
 
 # --- JWT Authentication Functions (to be adapted) ---
 
@@ -271,7 +282,11 @@ fi
 
 # Step 2: Construct Upload URL
 UPLOAD_URL="$GITLAB_URL_BASE/api/v4/projects/$PROJECT_IDENTIFIER_ENCODED/packages/generic/$PACKAGE_NAME_ENCODED/$PACKAGE_VERSION_ENCODED/$UPLOAD_FILE_BASENAME_ENCODED"
-echo_info "Upload URL: $UPLOAD_URL"
+if [ "$DEBUG_MODE" = "true" ]; then
+    echo_info "[DEBUG] Final UPLOAD_URL: $UPLOAD_URL"
+else
+    echo_info "Upload URL: $UPLOAD_URL"
+fi
 
 # Step 3: Perform Upload (with potential retry for JWT)
 ATTEMPT=1
