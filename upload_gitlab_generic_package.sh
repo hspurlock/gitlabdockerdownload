@@ -295,12 +295,11 @@ UPLOAD_SUCCESSFUL=false
 
 while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
     echo_info "Attempting upload (Attempt $ATTEMPT/$MAX_ATTEMPTS)..."
-    HTTP_STATUS=$(curl --silent --show-error --location --request PUT \
-        --header "$AUTH_HEADER_FOR_UPLOAD" \
-        --upload-file "$FILE_TO_UPLOAD" \
-        --write-out "%{http_code}" \
-        --output /dev/null \
-        "$UPLOAD_URL")
+    HTTP_STATUS=$(curl --silent --show-error --output /dev/null --write-out "%{http_code}" \
+            -H "$AUTH_HEADER_FOR_UPLOAD" \
+            -H "Content-Type: application/octet-stream" \
+            -X PUT --upload-file "$FILE_TO_UPLOAD" \
+            "$UPLOAD_URL")
 
     echo_info "Upload attempt $ATTEMPT finished with HTTP status: $HTTP_STATUS"
 
