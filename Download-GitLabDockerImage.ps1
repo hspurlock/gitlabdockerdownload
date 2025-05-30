@@ -192,7 +192,7 @@ function Get-GitLabRegistryJwt {
     $scope = "repository:$($TargetImagePath):pull"
     # For push, scope would be "repository:$TargetImagePath:pull,push"
 
-    $tokenUrl = "$($JwtRealm)?service=$($JwtService)&scope=repository:$($ImagePath):pull"
+    $tokenUrl = "$($JwtRealm)?service=$($JwtService)&scope=$($scope)"
     $bodyString = "grant_type=password&client_id=docker&access_type=offline"
 
     $tokenRequestParams = @{
