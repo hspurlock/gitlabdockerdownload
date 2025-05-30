@@ -125,17 +125,15 @@ function Discover-GitLabAuthParameters {
             if (-not [string]::IsNullOrEmpty($wwwAuthenticateHeader)) {
                 Write-Host "Www-Authenticate header: $wwwAuthenticateHeader"
                 # Example: Bearer realm="https://gitlab.example.com/jwt/auth",service="container_registry"
-                $realmMatch = [regex]::Match($wwwAuthenticateHeader, 'realm="([^"]*)"')
-                $serviceMatch = [regex]::Match($wwwAuthenticateHeader, 'service="([^"]*)"')
-
-                if ($realmMatch.Success) {
-                    $script:TokenRealm = $realmMatch.Groups[1].Value
+                if ($wwwAuthenticateHeader -match 'realm="([^"]*)"') {
+                    $script:TokenRealm = $Matches[1]
                     Write-Host "Discovered Realm: $($script:TokenRealm)"
                 } else {
                     Write-Warning "Could not parse realm from Www-Authenticate header."
                 }
-                if ($serviceMatch.Success) {
-                    $script:TokenService = $serviceMatch.Groups[1].Value
+
+                if ($wwwAuthenticateHeader -match 'service="([^"]*)"') {
+                    $script:TokenService = $Matches[1]
                     Write-Host "Discovered Service: $($script:TokenService)"
                 } else {
                     Write-Warning "Could not parse service from Www-Authenticate header. Defaulting to 'container_registry'."
