@@ -102,13 +102,16 @@ if ! command -v jq &> /dev/null; then
     exit 1
 fi
 
-# URL Encode project path and file basename
+# Normalize GitLab URL: remove scheme, remove trailing slashes, then add https://
+GITLAB_URL_NO_SCHEME=$(echo "$GITLAB_URL" | sed -e 's|^[^/]*//||' -e 's:/*$::')
+GITLAB_URL_BASE="https://$GITLAB_URL_NO_SCHEME"
+
+# URL Encode components
 PROJECT_IDENTIFIER_ENCODED=$(echo "$PROJECT_ID_OR_PATH" | jq -sRr @uri)
+PACKAGE_NAME_ENCODED=$(echo "$PACKAGE_NAME" | jq -sRr @uri)
+PACKAGE_VERSION_ENCODED=$(echo "$PACKAGE_VERSION" | jq -sRr @uri)
 UPLOAD_FILE_BASENAME=$(basename "$FILE_TO_UPLOAD")
 UPLOAD_FILE_BASENAME_ENCODED=$(echo "$UPLOAD_FILE_BASENAME" | jq -sRr @uri)
-
-# Normalize GitLab URL (remove trailing slash if any)
-GITLAB_URL=$(echo "$GITLAB_URL" | sed 's:/*$::')
 
 # --- JWT Authentication Functions (to be adapted) ---
 
@@ -126,7 +129,8 @@ discover_auth_params() {
     local current_username=$4
 
     # Probe the base packages API for the project
-    local discovery_api_url="https:// نابbase_url/api/v4/projects/نابproject_id_enc/packages"
+    # $base_url should now already have https://
+    local discovery_api_url="$base_url/api/v4/projects/$project_id_enc/packages"
     echo_info "Attempting to discover authentication parameters from $discovery_api_url"
 
     local auth_header=""
@@ -236,7 +240,7 @@ USE_DIRECT_TOKEN_AUTH=false
 
 if [ -z "$AUTH_REALM" ] || [ -z "$AUTH_SERVICE" ]; then # If realm or service not manually provided, try discovery
     echo_info "Auth Realm or Service not provided, attempting discovery..."
-    discover_auth_params "$GITLAB_URL" "$PROJECT_IDENTIFIER_ENCODED" "$USER_TOKEN" "$USERNAME"
+    discover_auth_params "$GITLAB_URL_BASE" "$PROJECT_IDENTIFIER_ENCODED" "$USER_TOKEN" "$USERNAME"
     if [ -z "$TOKEN_REALM" ]; then # Check if discovery set the global TOKEN_REALM
         echo_warn "JWT Realm discovery failed or not supported by endpoint. Will attempt to use token directly."
         USE_DIRECT_TOKEN_AUTH=true
@@ -266,7 +270,7 @@ else
 fi
 
 # Step 2: Construct Upload URL
-UPLOAD_URL="https://$GITLAB_URL/api/v4/projects/$PROJECT_IDENTIFIER_ENCODED/packages/generic/$PACKAGE_NAME/$PACKAGE_VERSION/$UPLOAD_FILE_BASENAME_ENCODED"
+UPLOAD_URL="$GITLAB_URL_BASE/api/v4/projects/$PROJECT_IDENTIFIER_ENCODED/packages/generic/$PACKAGE_NAME_ENCODED/$PACKAGE_VERSION_ENCODED/$UPLOAD_FILE_BASENAME_ENCODED"
 echo_info "Upload URL: $UPLOAD_URL"
 
 # Step 3: Perform Upload (with potential retry for JWT)
