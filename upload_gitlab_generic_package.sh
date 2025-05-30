@@ -277,6 +277,7 @@ if [ "$USE_DIRECT_TOKEN_AUTH" = false ]; then
     AUTH_HEADER_FOR_UPLOAD="Authorization: Bearer $CURRENT_JWT"
 else
     echo_info "Using direct token authentication (Bearer)."
+    USE_DIRECT_TOKEN_AUTH=true # Ensure this flag is set for direct auth
     AUTH_HEADER_FOR_UPLOAD="Authorization: Bearer $USER_TOKEN"
 fi
 
@@ -295,11 +296,18 @@ UPLOAD_SUCCESSFUL=false
 
 while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
     echo_info "Attempting upload (Attempt $ATTEMPT/$MAX_ATTEMPTS)..."
-    HTTP_STATUS=$(curl --silent --show-error --output /dev/null --write-out "%{http_code}" \
-            -H "$AUTH_HEADER_FOR_UPLOAD" \
-            -H "Content-Type: application/octet-stream" \
-            -X PUT --upload-file "$FILE_TO_UPLOAD" \
-            "$UPLOAD_URL")
+
+    local curl_cmd_args=(
+        --show-error # Shows curl's own errors if any
+        -H "$AUTH_HEADER_FOR_UPLOAD"
+        -H "Content-Type: application/octet-stream"
+        -X PUT
+        --upload-file "$FILE_TO_UPLOAD"
+        "$UPLOAD_URL"
+    )
+
+    # First, try to get just the HTTP status code without full output
+    HTTP_STATUS=$(curl --silent --write-out "%{http_code}" --output /dev/null "${curl_cmd_args[@]}")
 
     echo_info "Upload attempt $ATTEMPT finished with HTTP status: $HTTP_STATUS"
 
@@ -312,14 +320,15 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
         CURRENT_JWT="" # Clear old JWT
         if ! fetch_registry_jwt "$AUTH_REALM" "$AUTH_SERVICE" "$REQUESTED_JWT_SCOPE" "$USERNAME" "$USER_TOKEN"; then
             echo_error "Failed to refresh JWT. Cannot retry upload."
-            break
+            break # Stop if JWT refresh fails
         fi
-        AUTH_HEADER_FOR_UPLOAD="Authorization: Bearer $CURRENT_JWT"
+        AUTH_HEADER_FOR_UPLOAD="Authorization: Bearer $CURRENT_JWT" # Update header with new JWT
     else
-        echo_error "Upload failed with HTTP status: $HTTP_STATUS. For details, run curl with -v."
-        # Consider showing response body if not too large, or if output was not /dev/null
-        # Example: curl -v ... "$UPLOAD_URL" (without --output /dev/null and --silent for debugging)
-        break
+        echo_error "Upload failed with HTTP status: $HTTP_STATUS."
+        echo_error "Showing full verbose output from curl for diagnostics:"
+        # Re-run the command with -v to show headers and response body
+        curl -v "${curl_cmd_args[@]}"
+        break # Stop on other failures
     fi
     ATTEMPT=$((ATTEMPT + 1))
 done
