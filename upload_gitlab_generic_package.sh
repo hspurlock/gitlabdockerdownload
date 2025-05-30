@@ -297,7 +297,7 @@ UPLOAD_SUCCESSFUL=false
 while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
     echo_info "Attempting upload (Attempt $ATTEMPT/$MAX_ATTEMPTS)..."
 
-    local curl_cmd_args=(
+    curl_cmd_args=(
         --show-error # Shows curl's own errors if any
         -H "$AUTH_HEADER_FOR_UPLOAD"
         -H "Content-Type: application/octet-stream"
