@@ -110,11 +110,11 @@ GITLAB_URL_NO_SCHEME=$(echo "$GITLAB_URL" | sed -e 's|^[^/]*//||' -e 's:/*$::')
 GITLAB_URL_BASE="https://$GITLAB_URL_NO_SCHEME"
 
 # URL Encode components
-PROJECT_IDENTIFIER_ENCODED=$(echo "$PROJECT_ID_OR_PATH" | jq -sRr @uri)
-PACKAGE_NAME_ENCODED=$(echo "$PACKAGE_NAME" | jq -sRr @uri)
-PACKAGE_VERSION_ENCODED=$(echo "$PACKAGE_VERSION" | jq -sRr @uri)
+PROJECT_IDENTIFIER_ENCODED=$(printf "%s" "$PROJECT_ID_OR_PATH" | jq -sRr @uri)
+PACKAGE_NAME_ENCODED=$(printf "%s" "$PACKAGE_NAME" | jq -sRr @uri)
+PACKAGE_VERSION_ENCODED=$(printf "%s" "$PACKAGE_VERSION" | jq -sRr @uri)
 UPLOAD_FILE_BASENAME=$(basename "$FILE_TO_UPLOAD")
-UPLOAD_FILE_BASENAME_ENCODED=$(echo "$UPLOAD_FILE_BASENAME" | jq -sRr @uri)
+UPLOAD_FILE_BASENAME_ENCODED=$(printf "%s" "$UPLOAD_FILE_BASENAME" | jq -sRr @uri)
 
 if [ "$DEBUG_MODE" = "true" ]; then
     echo_info "[DEBUG] GITLAB_URL_BASE: $GITLAB_URL_BASE"
