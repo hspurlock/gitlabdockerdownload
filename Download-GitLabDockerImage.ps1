@@ -108,7 +108,7 @@ function Discover-GitLabAuthParameters {
         Headers = @{
             "Accept" = "application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json"
         }
-        SkipHttpErrorCheck = $true # We expect a 401
+        # SkipHttpErrorCheck removed for PSv5 compatibility; try/catch handles 401
     }
 
     if ($InitialUsername) {
